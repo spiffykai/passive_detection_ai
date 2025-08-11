@@ -184,10 +184,18 @@ class OpenSkyClient:
         if not a.client_id or not a.client_secret:
             raise ValueError("OAuth mode requires client_id and client_secret in config.auth")
 
+        # OpenSky expects credentials in the request body, not Basic auth
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": a.client_id,
+            "client_secret": a.client_secret
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
         resp = self.session.post(
             a.token_url,
-            data={"grant_type": "client_credentials"},
-            auth=(a.client_id, a.client_secret),
+            data=data,
+            headers=headers,
             timeout=self.config.api.timeout_seconds,
         )
         resp.raise_for_status()
@@ -196,6 +204,7 @@ class OpenSkyClient:
         expires_in = float(payload.get("expires_in", 3600))
         if not token:
             raise RuntimeError("Token endpoint did not return access_token")
+        # Leave 60s safety margin
         return token, time.time() + max(300.0, (expires_in - 60.0))
 
     def _ensure_token(self):
@@ -386,12 +395,19 @@ def filter_in_beam(data: Dict[str, Any], sensor_lat: float, sensor_lon: float,
                    azimuth: float, beam_width: float,
                    min_alt: Optional[float], max_alt: Optional[float]) -> List[Dict[str, Any]]:
     states = data.get("states", []) or []
+    # Get the overall timestamp for this data snapshot
+    data_timestamp = data.get("time")
+
     results = []
     for s in states:
         callsign = (s[1] or "").strip() or "N/A"
         lon = s[5]
         lat = s[6]
         alt = s[7]
+        # Individual aircraft timestamps
+        time_position = s[3]  # Unix timestamp of last position update
+        last_contact = s[4]   # Unix timestamp of last contact
+
         if not is_within_beam(sensor_lat, sensor_lon, lat, lon, azimuth, beam_width):
             continue
         if min_alt is not None and (alt is None or alt < min_alt):
@@ -414,6 +430,9 @@ def filter_in_beam(data: Dict[str, Any], sensor_lat: float, sensor_lon: float,
             "distance_3d_km": distance_3d_km,
             "velocity_ms": s[9],
             "heading_deg": s[10],
+            "data_timestamp": data_timestamp,
+            "time_position": time_position,
+            "last_contact": last_contact,
         })
     return results
 
@@ -628,6 +647,7 @@ def main():
             writer = csv.DictWriter(f, fieldnames=[
                 "icao24", "callsign", "lat", "lon", "baro_alt_m",
                 "bearing_deg", "ground_distance_km", "distance_3d_km", "velocity_ms", "heading_deg",
+                "data_timestamp", "time_position", "last_contact",
                 "registration", "manufacturericao", "model", "typecode"
             ])
             writer.writeheader()
